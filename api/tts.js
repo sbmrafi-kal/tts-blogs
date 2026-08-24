@@ -329,7 +329,8 @@ export default async function handler(req, res) {
       body = {
         text: parsedUrl.searchParams.get("text") || "",
         voice: parsedUrl.searchParams.get("voice") || "",
-        articleId: parsedUrl.searchParams.get("articleId") || ""
+        articleId: parsedUrl.searchParams.get("articleId") || parsedUrl.searchParams.get("id") || "",
+        version: parsedUrl.searchParams.get("v") || ""
       };
     } else {
       // POST fallback for large payloads
@@ -379,16 +380,17 @@ export default async function handler(req, res) {
       success: true,
       voice: selectedVoice,
       articleId: body.articleId || null,
+      version: body.version || null,
       audioUrl: base64Audio,
       durationSec: totalDurationSec,
       wordCount: boundaries.length,
       boundaries: boundaries
     };
 
-    // Vercel Global Edge CDN Cache Headers: 30 days cache (2592000s), stale-while-revalidate 24h (86400s)
+    // Vercel Global Edge CDN Cache Headers: 1 year cache (31536000s), stale-while-revalidate 24h (86400s)
     res.writeHead(200, {
       "Content-Type": "application/json",
-      "Cache-Control": "public, s-maxage=2592000, stale-while-revalidate=86400"
+      "Cache-Control": "public, s-maxage=31536000, stale-while-revalidate=86400"
     });
     res.end(JSON.stringify(responsePayload));
   } catch (error) {
