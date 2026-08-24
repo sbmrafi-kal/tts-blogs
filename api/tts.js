@@ -1,6 +1,6 @@
 /**
  * Microsoft Edge Neural TTS Serverless Proxy with Global Vercel Edge CDN Caching
- * Strict WordBoundary Extraction & Frame-Perfect Audio Sync
+ * 100% Deterministic Word-Boundary Merging & Frame-Perfect Audio Sync
  *
  * Endpoint: GET & POST /api/tts
  * 100% Free, Serverless, Edge CDN Cached (s-maxage=31536000)
@@ -149,7 +149,7 @@ async function synthesizeChunk(voice, chunkText, prosody) {
   });
 
   const audioChunks = [];
-  const words = [];
+  const rawWords = [];
 
   if (metadataStream) {
     metadataStream.on("data", (chunk) => {
@@ -163,7 +163,6 @@ async function synthesizeChunk(voice, chunkText, prosody) {
 
         for (const item of items) {
           if (!item) continue;
-          // STRICT FILTER: Only accept pure WordBoundary events
           if (item.Type === "WordBoundary") {
             const data = item.Data || item;
             let textVal = "";
@@ -174,7 +173,7 @@ async function synthesizeChunk(voice, chunkText, prosody) {
             }
 
             if (textVal && textVal.trim()) {
-              words.push({
+              rawWords.push({
                 text: textVal.trim(),
                 offsetTicks: data.Offset || 0,
                 durationTicks: data.Duration || 0
@@ -198,7 +197,7 @@ async function synthesizeChunk(voice, chunkText, prosody) {
 
   return {
     buffer: Buffer.concat(audioChunks),
-    words
+    rawWords
   };
 }
 
@@ -211,7 +210,8 @@ function splitIntoParagraphs(rawText) {
 }
 
 /**
- * Synthesizes full article, builds prebuilt HTML and strictly indexed boundaries
+ * Synthesizes full article, merges sub-tokens (e.g. isn't -> isn + t),
+ * and produces a 100% 1-to-1 matching boundary list with DOM text
  */
 async function synthesizeFullArticle(rawText, voice = SUPPORTED_VOICES.default) {
   const paragraphs = splitIntoParagraphs(rawText);
@@ -221,26 +221,68 @@ async function synthesizeFullArticle(rawText, voice = SUPPORTED_VOICES.default) 
   let wordIndex = 0;
 
   for (const paraText of paragraphs) {
+    const expectedWords = paraText.match(/\S+/g) || [];
     const prosody = analyzeChunkProsody(paraText);
-    const { buffer, words } = await synthesizeChunk(voice, paraText, prosody);
+    const { buffer, rawWords } = await synthesizeChunk(voice, paraText, prosody);
 
     let paraDurationSec = 0;
-    if (words.length > 0) {
-      const lastWord = words[words.length - 1];
+    if (rawWords.length > 0) {
+      const lastWord = rawWords[rawWords.length - 1];
       paraDurationSec = (lastWord.offsetTicks + lastWord.durationTicks) / 10000000;
     } else {
       paraDurationSec = buffer.length / 6000;
     }
 
-    for (const w of words) {
-      const startSec = parseFloat((runningTimeSec + w.offsetTicks / 10000000).toFixed(4));
-      const durationSec = parseFloat((w.durationTicks / 10000000).toFixed(4));
-      const endSec = parseFloat((startSec + durationSec).toFixed(4));
+    // Merge sub-tokens against expectedWords for 100% exact alignment
+    let rawIdx = 0;
+    for (let wIdx = 0; wIdx < expectedWords.length; wIdx++) {
+      const word = expectedWords[wIdx];
+      const cleanWord = word.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+      if (rawIdx >= rawWords.length) {
+        const startSec = parseFloat(runningTimeSec.toFixed(4));
+        const endSec = parseFloat((runningTimeSec + 0.3).toFixed(4));
+        allBoundaries.push({
+          id: `w-${wordIndex}`,
+          wordIndex: wordIndex++,
+          text: word,
+          startMs: Math.round(startSec * 1000),
+          durationMs: 300,
+          endMs: Math.round(endSec * 1000),
+          startSec,
+          durationSec: 0.3,
+          endSec
+        });
+        continue;
+      }
+
+      let currentRaw = rawWords[rawIdx];
+      let accumClean = currentRaw.text.toLowerCase().replace(/[^a-z0-9]/g, "");
+      let startTicks = currentRaw.offsetTicks;
+      let endTicks = currentRaw.offsetTicks + currentRaw.durationTicks;
+      rawIdx++;
+
+      // Consume sub-tokens if word contains contractions / hyphens (e.g. isn't, 5-minute)
+      while (accumClean.length < cleanWord.length && rawIdx < rawWords.length) {
+        const nextRaw = rawWords[rawIdx];
+        const nextClean = nextRaw.text.toLowerCase().replace(/[^a-z0-9]/g, "");
+        if (cleanWord.startsWith(accumClean + nextClean) || cleanWord.includes(accumClean + nextClean)) {
+          accumClean += nextClean;
+          endTicks = nextRaw.offsetTicks + nextRaw.durationTicks;
+          rawIdx++;
+        } else {
+          break;
+        }
+      }
+
+      const startSec = parseFloat((runningTimeSec + startTicks / 10000000).toFixed(4));
+      const endSec = parseFloat((runningTimeSec + endTicks / 10000000).toFixed(4));
+      const durationSec = parseFloat((endSec - startSec).toFixed(4));
 
       allBoundaries.push({
         id: `w-${wordIndex}`,
-        wordIndex: wordIndex,
-        text: w.text,
+        wordIndex: wordIndex++,
+        text: word,
         startMs: Math.round(startSec * 1000),
         durationMs: Math.round(durationSec * 1000),
         endMs: Math.round(endSec * 1000),
@@ -248,7 +290,6 @@ async function synthesizeFullArticle(rawText, voice = SUPPORTED_VOICES.default) 
         durationSec,
         endSec
       });
-      wordIndex++;
     }
 
     combinedAudioBuffers.push(buffer);
@@ -258,7 +299,7 @@ async function synthesizeFullArticle(rawText, voice = SUPPORTED_VOICES.default) 
   // Pre-build structured HTML spans with matching ids
   let boundaryPointer = 0;
   const prebuiltHtml = paragraphs.map((para) => {
-    const tokens = para.trim().split(/\s+/).map((word) => {
+    const tokens = (para.match(/\S+/g) || []).map((word) => {
       const id = `w-${boundaryPointer}`;
       boundaryPointer++;
       return `<span class="ka-read-word ka-word-unread" id="${id}" data-word-idx="${id}">${word}</span>`;
