@@ -1,13 +1,9 @@
 /**
  * Microsoft Edge Neural TTS Serverless Proxy with Global Vercel Edge CDN Caching
- * Frame-Perfect Millisecond Word Boundaries & Natural Punctuation Cadence
+ * Pre-Generated HTML Spans & Millisecond Word Boundaries (One-Time Edge Generation)
  *
- * Features:
- * - Precise 250ms sentence pauses
- * - Natural comma pauses
- * - Frame-perfect sub-millisecond word synchronization
- * - 346+ Technical Ayurvedic terms dictionary
- * - 100% Free, Serverless, Edge CDN Cached (s-maxage=31536000)
+ * Endpoint: GET & POST /api/tts
+ * 100% Free, Serverless, Edge CDN Cached (s-maxage=31536000)
  */
 
 import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts";
@@ -109,7 +105,6 @@ function prepareNaturalPunctuationText(raw) {
 
 /**
  * Analyzes sentence characteristics to apply Rule-Based Prosody
- * Pause target: 250ms for natural full stops and paragraph ends
  */
 function analyzeChunkProsody(chunkText) {
   const trimmed = chunkText.trim();
@@ -123,39 +118,16 @@ function analyzeChunkProsody(chunkText) {
     (w) => TECHNICAL_AYURVEDIC_TERMS.has(w) || (w.length >= 12 && !w.includes("-"))
   );
 
-  // 1. Exclamations & Hype buzzwords -> high energy (+10Hz pitch, +8% rate)
   if (hasExclamation || hasHypeWord) {
-    return {
-      pitch: "+10Hz",
-      rate: "+8%",
-      volume: "+6%"
-    };
+    return { pitch: "+10Hz", rate: "+8%", volume: "+6%" };
   }
-
-  // 2. Questions (?) -> natural closing cadence
   if (isQuestion) {
-    return {
-      pitch: "+10Hz",
-      rate: "+5%",
-      volume: "+0%"
-    };
+    return { pitch: "+10Hz", rate: "+5%", volume: "+0%" };
   }
-
-  // 3. Complex / technical Ayurvedic clauses -> clear articulation (+10Hz pitch, +2% rate)
   if (hasTechWord) {
-    return {
-      pitch: "+10Hz",
-      rate: "+2%",
-      volume: "+0%"
-    };
+    return { pitch: "+10Hz", rate: "+2%", volume: "+0%" };
   }
-
-  // Standard expressive baseline tone (+10Hz pitch, +6% rate)
-  return {
-    pitch: "+10Hz",
-    rate: "+6%",
-    volume: "+0%"
-  };
+  return { pitch: "+10Hz", rate: "+6%", volume: "+0%" };
 }
 
 /**
@@ -228,7 +200,7 @@ async function synthesizeChunk(voice, chunkText, prosody) {
 }
 
 /**
- * Splits text into paragraphs, preserving natural flow without artificial timestamp drift
+ * Splits text into paragraphs
  */
 function splitIntoParagraphs(rawText) {
   const paras = rawText.split(/\n\s*\n+/).filter(p => p.trim());
@@ -236,7 +208,7 @@ function splitIntoParagraphs(rawText) {
 }
 
 /**
- * Synthesizes full article with 100% frame-perfect word boundary alignment
+ * Synthesizes full article, builds prebuilt HTML and indexed boundaries
  */
 async function synthesizeFullArticle(rawText, voice = SUPPORTED_VOICES.default) {
   const paragraphs = splitIntoParagraphs(rawText);
@@ -264,26 +236,40 @@ async function synthesizeFullArticle(rawText, voice = SUPPORTED_VOICES.default) 
 
       if (w.text) {
         allBoundaries.push({
-          wordIndex: wordIndex++,
+          id: `w-${wordIndex}`,
+          wordIndex: wordIndex,
           text: w.text,
-          offsetMs: Math.round(startSec * 1000),
+          startMs: Math.round(startSec * 1000),
           durationMs: Math.round(durationSec * 1000),
+          endMs: Math.round(endSec * 1000),
           startSec,
           durationSec,
           endSec
         });
+        wordIndex++;
       }
     }
 
     combinedAudioBuffers.push(buffer);
-    // Strict audio duration addition guarantees zero drift between audio & timestamps
     runningTimeSec += paraDurationSec;
   }
+
+  // Pre-build structured HTML spans with matching ids
+  let boundaryPointer = 0;
+  const prebuiltHtml = paragraphs.map((para) => {
+    const tokens = para.trim().split(/\s+/).map((word) => {
+      const id = `w-${boundaryPointer}`;
+      boundaryPointer++;
+      return `<span class="ka-read-word ka-word-unread" id="${id}" data-word-idx="${id}">${word}</span>`;
+    }).join(" ");
+    return `<p class="ka-reading-unread">${tokens}</p>`;
+  }).join("\n");
 
   const fullAudio = Buffer.concat(combinedAudioBuffers);
   return {
     audioBuffer: fullAudio,
     boundaries: allBoundaries,
+    prebuiltHtml,
     totalDurationSec: parseFloat(runningTimeSec.toFixed(2))
   };
 }
@@ -363,7 +349,7 @@ export default async function handler(req, res) {
       selectedVoice = body.voice;
     }
 
-    const { audioBuffer, boundaries, totalDurationSec } = await synthesizeFullArticle(text, selectedVoice);
+    const { audioBuffer, boundaries, prebuiltHtml, totalDurationSec } = await synthesizeFullArticle(text, selectedVoice);
     const base64Audio = `data:audio/mp3;base64,${audioBuffer.toString("base64")}`;
 
     const responsePayload = {
@@ -374,7 +360,8 @@ export default async function handler(req, res) {
       audioUrl: base64Audio,
       durationSec: totalDurationSec,
       wordCount: boundaries.length,
-      boundaries: boundaries
+      boundaries: boundaries,
+      prebuiltHtml: prebuiltHtml
     };
 
     // Vercel Global Edge CDN Cache Headers: 1 year cache (31536000s), stale-while-revalidate 24h (86400s)
