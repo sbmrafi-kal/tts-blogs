@@ -1,6 +1,6 @@
 /**
  * Microsoft Edge Neural TTS Serverless Proxy with Global Vercel Edge CDN Caching
- * Pre-Generated HTML Spans & Millisecond Word Boundaries (One-Time Edge Generation)
+ * Strict WordBoundary Extraction & Frame-Perfect Audio Sync
  *
  * Endpoint: GET & POST /api/tts
  * 100% Free, Serverless, Edge CDN Cached (s-maxage=31536000)
@@ -131,7 +131,7 @@ function analyzeChunkProsody(chunkText) {
 }
 
 /**
- * Synthesizes a chunk of text with exact boundary events
+ * Synthesizes a chunk of text with strictly isolated WordBoundary events
  */
 async function synthesizeChunk(voice, chunkText, prosody) {
   const tts = new MsEdgeTTS();
@@ -163,7 +163,8 @@ async function synthesizeChunk(voice, chunkText, prosody) {
 
         for (const item of items) {
           if (!item) continue;
-          if (item.Type === "WordBoundary" || (item.Data && item.Data.Offset !== undefined)) {
+          // STRICT FILTER: Only accept pure WordBoundary events
+          if (item.Type === "WordBoundary") {
             const data = item.Data || item;
             let textVal = "";
             if (data.text) {
@@ -172,11 +173,13 @@ async function synthesizeChunk(voice, chunkText, prosody) {
               textVal = String(data.Word || data.word);
             }
 
-            words.push({
-              text: textVal.trim(),
-              offsetTicks: data.Offset || 0,
-              durationTicks: data.Duration || 0
-            });
+            if (textVal && textVal.trim()) {
+              words.push({
+                text: textVal.trim(),
+                offsetTicks: data.Offset || 0,
+                durationTicks: data.Duration || 0
+              });
+            }
           }
         }
       } catch (e) {}
@@ -208,7 +211,7 @@ function splitIntoParagraphs(rawText) {
 }
 
 /**
- * Synthesizes full article, builds prebuilt HTML and indexed boundaries
+ * Synthesizes full article, builds prebuilt HTML and strictly indexed boundaries
  */
 async function synthesizeFullArticle(rawText, voice = SUPPORTED_VOICES.default) {
   const paragraphs = splitIntoParagraphs(rawText);
@@ -234,20 +237,18 @@ async function synthesizeFullArticle(rawText, voice = SUPPORTED_VOICES.default) 
       const durationSec = parseFloat((w.durationTicks / 10000000).toFixed(4));
       const endSec = parseFloat((startSec + durationSec).toFixed(4));
 
-      if (w.text) {
-        allBoundaries.push({
-          id: `w-${wordIndex}`,
-          wordIndex: wordIndex,
-          text: w.text,
-          startMs: Math.round(startSec * 1000),
-          durationMs: Math.round(durationSec * 1000),
-          endMs: Math.round(endSec * 1000),
-          startSec,
-          durationSec,
-          endSec
-        });
-        wordIndex++;
-      }
+      allBoundaries.push({
+        id: `w-${wordIndex}`,
+        wordIndex: wordIndex,
+        text: w.text,
+        startMs: Math.round(startSec * 1000),
+        durationMs: Math.round(durationSec * 1000),
+        endMs: Math.round(endSec * 1000),
+        startSec,
+        durationSec,
+        endSec
+      });
+      wordIndex++;
     }
 
     combinedAudioBuffers.push(buffer);
